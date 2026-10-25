@@ -26,8 +26,7 @@ class TData(Base):
 
     __tablename__ = "TrainingData"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    x = Column(Float, nullable=False)
+    x = Column(Float, primary_key=True, nullable=False)
     y1 = Column(Float, nullable=False)
     y2 = Column(Float, nullable=False)
     y3 = Column(Float, nullable=False)
@@ -94,7 +93,7 @@ class DbManager:
 
 def _ideal_function_columns() -> dict[str, Column]:
     """Return a dictionary of ideal function columns."""
-    return {f"ideal_function_{i}": Column(Float, nullable=True) for i in range(1, 51)}
+    return {f"y{i}": Column(Float, nullable=False) for i in range(1, 51)}
 
 
 IdealFunctionColumns = type(

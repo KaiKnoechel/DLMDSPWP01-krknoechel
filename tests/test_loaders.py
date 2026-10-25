@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import inspect
 
-from find_ideal_func.database import DbManager
+from find_ideal_func.database import DbManager, IdealFunctionColumns, TData
 from find_ideal_func.errors import DatavalidatorError
 from find_ideal_func.loaders import (
     IFCSVLoader,
@@ -103,3 +103,61 @@ def test_ideal_function_loader_expects_51_columns():
     """Test that the ideal function CSV loader expects 51 columns, with the first being 'x'."""
     assert IFCSVLoader.expected_columns[0] == "x"
     assert len(IFCSVLoader.expected_columns) == 51
+
+
+@pytest.mark.parametrize(
+    "loader_class, model",
+    [(TrainingDataCSVLoader, TData), (IFCSVLoader, IdealFunctionColumns)],
+)
+def test_load_df_preserves_orm_schema_and_replaces_rows(tmp_path, loader_class, model):
+    """Repeated loads preserve constraints and remain queryable through the ORM."""
+    csv_path = tmp_path / "data.csv"
+    dataframe = pd.DataFrame({column: [1.0] for column in loader_class.expected_columns})
+    dataframe.to_csv(csv_path, index=False)
+    db = DbManager(f"sqlite:///{tmp_path / 'db.sqlite'}")
+    db.init_db()
+    before = inspect(db.engine).get_columns(loader_class.table_name)
+
+    with db.session_scope() as session:
+        loader = loader_class(csv_path)
+        loader.load_df(session)
+        loader.load_df(session)
+        row = session.query(model).one()
+        assert row.x == 1.0
+        assert row.y1 == 1.0
+
+    after = inspect(db.engine).get_columns(loader_class.table_name)
+    assert [
+        (column["name"], str(column["type"]), column["nullable"], column["primary_key"])
+        for column in after
+    ] == [
+        (column["name"], str(column["type"]), column["nullable"], column["primary_key"])
+        for column in before
+    ]
+    assert len(after) == len(loader_class.expected_columns)
+    assert all(not column["nullable"] for column in after)
+    assert inspect(db.engine).get_pk_constraint(loader_class.table_name)["constrained_columns"] == ["x"]
+
+
+@pytest.mark.parametrize(
+    "loader_class, model",
+    [(TrainingDataCSVLoader, TData), (IFCSVLoader, IdealFunctionColumns)],
+)
+def test_load_df_replacement_can_be_rolled_back(tmp_path, loader_class, model):
+    """Rolling back a replacement restores the previously committed rows."""
+    csv_path = tmp_path / "data.csv"
+    pd.DataFrame({column: [1.0] for column in loader_class.expected_columns}).to_csv(
+        csv_path, index=False
+    )
+    db = DbManager(f"sqlite:///{tmp_path / 'db.sqlite'}")
+    db.init_db()
+    with db.session_scope() as session:
+        loader_class(csv_path).load_df(session)
+
+    pd.DataFrame({column: [2.0] for column in loader_class.expected_columns}).to_csv(
+        csv_path, index=False
+    )
+    with db.get_session() as session:
+        loader_class(csv_path).load_df(session)
+        session.rollback()
+        assert session.query(model).one().x == 1.0
